@@ -3,7 +3,7 @@ import frappe
 from frappe.utils import cstr, flt, cint, get_files_path, get_datetime, get_url_to_form
 from frappe import _
 import requests.exceptions
-from .exceptions import woocommerceError
+from woocommerceconnector.exceptions import woocommerceError
 from .utils import make_woocommerce_log, disable_woocommerce_sync_for_item
 from erpnext.stock.utils import get_bin
 from .woocommerce_requests import post_request, get_woocommerce_items, get_woocommerce_item_variants,  put_request, get_woocommerce_item_image
@@ -757,8 +757,15 @@ def get_price_and_stock_details(item, warehouse, price_list):
     reserved_qty = frappe.db.get_value("Bin", {"item_code": item.get(
         "item_code"), "warehouse": warehouse}, "reserved_qty")
     qty = (actual_qty or 0) - (reserved_qty or 0)
-    price = frappe.db.get_value("Item Price",
-                                {"price_list": price_list, "item_code": item.get("item_code")}, "price_list_rate")
+
+    price = frappe.get_value(
+        doctype="Item Price",
+        filters={
+            "price_list": price_list,
+            "item_code": item.get("item_code")
+        },
+        fieldname="price_list_rate"
+    )
 
     item_price_and_quantity = {
         # only update regular price
