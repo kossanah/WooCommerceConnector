@@ -1,4 +1,6 @@
 from __future__ import unicode_literals
+
+from traitlets import CFloat
 import frappe
 from frappe.utils import cstr, flt, cint, get_files_path, get_datetime, get_url_to_form
 from frappe import _
@@ -530,6 +532,7 @@ def sync_item_with_woocommerce(item, price_list, warehouse, woocommerce_item=Non
         "short_description": item.get("description") or item.get("web_long_description") or item.get("woocommerce_description"),
     }
     item_data.update(get_price_and_stock_details(item, warehouse, price_list))
+    item_data.update(erp_item_image(item))
 
     if item.get("has_variants"):  # we are dealing a variable product
         item_data["type"] = "variable"
@@ -574,8 +577,9 @@ def sync_item_with_woocommerce(item, price_list, warehouse, woocommerce_item=Non
             put_request(
                 "products/{0}".format(item.get("woocommerce_product_id")), item_data)
 
-        except requests.exceptions.HTTPError as e:
-            if e.args[0] and (e.args[0].startswith("404") or e.args[0].startswith("400")):
+        except requests.exceptions.HTTPError as err:
+            # or e.args[0].startswith("400"))
+            if err.args[0] and err.args[0].startswith("404"):
                 if frappe.db.get_value("WooCommerce Config", "WooCommerce Config", "if_not_exists_create_item_to_woocommerce"):
                     item_data["id"] = ''
                     create_new_item_to_woocommerce(
@@ -583,7 +587,7 @@ def sync_item_with_woocommerce(item, price_list, warehouse, woocommerce_item=Non
                 else:
                     disable_woocommerce_sync_for_item(erp_item)
             else:
-                raise e
+                raise err
 
     if variant_list:
         for variant in variant_list:
@@ -633,40 +637,80 @@ def create_new_item_to_woocommerce(item, item_data, erp_item, variant_item_name_
     # update_variant_item(new_item, variant_item_name_list)
 
 
+def format_erpnext_img_url(image_details):
+    if image_details[1].startswith("http"):
+        return image_details[1]
+    else:
+        return 'https://' + cstr(frappe.local.site) + image_details[1]
+
+
 def sync_item_image(item):
+    # debug make a frapper log of item object when it is passed to this function
+    frappe.log_error(title="Item WooCommerce ID",
+                     message="{0}".format(item.get("woocommerce_product_id")))
+
     image_info = {
         "images": [{}]
     }
 
     if item.image:
         # Check if the ERPNext item has an image and if the image exists in WooCommerce
-        if get_woocommerce_item_image(item.woocommerce_product_id):
-            # If the image exists in WooCommerce, retrieve the ID of the image and include it in the `image_info["images"]` list
-            woocommerce_image_id = get_woocommerce_item_image(
-                item.woocommerce_product_id)[0]["id"]
-            image_info["images"][0]["id"] = woocommerce_image_id
+        if item.woocommerce_product_id is not None:
+            try:
+                woocommerce_image_id = get_woocommerce_item_image(
+                    item.get("woocommerce_product_id"))
+                # If the image exists in WooCommerce, retrieve the ID of the image and include it in the `image_info["images"]` list
+                if woocommerce_image_id:
+                    image_info["images"][0]["id"] = woocommerce_image_id[0]["id"]
+                else:
+                    image_info["images"][0]["id"] = None
+            # catch request exceptions
+            except:
+                # Handle the case where no WooCommerce image ID is found
+                make_woocommerce_log(title="Image not found in WooCommerce", status="Error", method="sync_item_image",
+                                     message="No WooCommerce image ID found for image {0}".format(item.image), request_data=item, exception=False)
 
+        # Retrieve the details of the image for the ERPNext item from the database
+        image_details = frappe.db.get_value("File", {"file_url": item.image}, [
+                                            "file_name", "file_url", "is_private", "content_hash"])
+
+        if image_details is not None:
+            # Set the `src` field of the first image in the `image_info["images"]` list to the constructed image URL
+            image_info["images"][0]["src"] = format_erpnext_img_url(
+                image_details)
+
+            # Set the `position` field of the first image in the `image_info["images"]` list to `0`
+            image_info["images"][0]["position"] = 0
+        else:
+            # Handle the case where the image details are not found
+            make_woocommerce_log(title="Image not found in ERPNext", status="Error", method="sync_item_image",
+                                 message="Image details not found in ERPNext for image {0}".format(item.image), request_data=item, exception=False)
+        if item.woocommerce_product_id is not None:
+            try:
+                post_request(
+                    "products/{0}".format(item.woocommerce_product_id), image_info)
+                # log the value of image_info
+                make_woocommerce_log(title="Image Synced", status="Success", method="sync_item_image", message="Image {0} synced successfully for Item {1}".format(
+                    image_info, item.name), request_data=image_info, exception=False)
+            except Exception as e:
+                make_woocommerce_log(title="{0}".format(e), status="Error", method="sync_item_image", message=frappe.get_traceback(),
+                                     request_data=item, exception=True)
+
+
+def erp_item_image(item):
+    # Initialize the `image_info` list with an empty dictionary
+    image_info = {
+        "images": [{}]
+    }
+
+    if item.image:
         # Retrieve the details of the image for the ERPNext item from the database
         image_details = frappe.db.get_value("File", {"file_url": item.image}, [
             "file_name", "file_url", "is_private", "content_hash"])
 
-        # Construct the URL of the image based on the retrieved details
-        if image_details[1].startswith(("http", "https")):
-            # If the image URL starts with "http" or "https", use it as is
-            image_url = image_details[1]
-        else:
-            # Otherwise, construct the image URL using the current site URL and the image URL from the ERPNext item
-            image_url = 'https://' + cstr(frappe.local.site) + image_details[1]
-
-        # Set the `src` field of the first image in the `image_info["images"]` list to the constructed image URL
-        image_info["images"][0]["src"] = image_url
-
-        # Set the `position` field of the first image in the `image_info["images"]` list to `0`
-        image_info["images"][0]["position"] = 0
-        post_request(
-            "products/{0}".format(item.woocommerce_product_id), image_info)
-        # debug the value of image_info
-        print("image_info", image_info)
+        image_info["images"][0]["src"] = format_erpnext_img_url(
+            image_details)
+        return image_info
 
 
 def validate_image_url(url):
@@ -767,11 +811,10 @@ def get_price_and_stock_details(item, warehouse, price_list):
         fieldname="price_list_rate"
     )
 
-    item_price_and_quantity = {
-        # only update regular price
-        "regular_price": "{0}".format(flt(price or 0))
-    }
-
+    item_price_and_quantity = {}
+    item_price_and_quantity.update({
+        "regular_price": "{0}".format(flt(price) if price else 0),
+    })
     if item.weight_per_unit:
         if item.weight_uom and item.weight_uom.lower() in ["kg", "g", "oz", "lb", "lbs"]:
             item_price_and_quantity.update({
@@ -779,9 +822,9 @@ def get_price_and_stock_details(item, warehouse, price_list):
             })
 
     if item.stock_keeping_unit:
-        item_price_and_quantity = {
+        item_price_and_quantity.update({
             "sku": "{0}".format(item.stock_keeping_unit)
-        }
+        })
 
     if item.get("sync_qty_with_woocommerce"):
         item_price_and_quantity.update({
