@@ -507,14 +507,9 @@ def get_erpnext_items(price_list):
           AND `tabItem`.`name` = `tabItem Price`.`item_code`
           AND `tabItem`.`sync_with_woocommerce` = 1 
           AND (`tabItem`.`disabled` IS NULL OR `tabItem`.`disabled` = 0) %s""" % (price_list, item_price_condition)
-    # frappe.log_error("{0}".format(item_from_item_price))
-    frappe.log_error(title="Item From Item Price",
-                     message="{0}".format(item_from_item_price))  # I dont no why frappe error log was used here instead of woocommerce log
-    # Log the error message in chunks
-    # error_message = "{0}".format(item_from_item_price)
-    # chunk_size = 140
-    # for i in range(0, len(error_message), chunk_size):
-    #     frappe.log_error(error_message[i:i+chunk_size])
+
+    # frappe.log_error(title="Item From Item Price",
+    #                  message="{0}".format(item_from_item_price))  # I dont no why frappe error log was used here instead of woocommerce log
 
     updated_price_item_list = frappe.db.sql(item_from_item_price, as_dict=1)
 
@@ -532,7 +527,11 @@ def sync_item_with_woocommerce(item, price_list, warehouse, woocommerce_item=Non
         "short_description": item.get("description") or item.get("web_long_description") or item.get("woocommerce_description"),
     }
     item_data.update(get_price_and_stock_details(item, warehouse, price_list))
-    item_data.update(erp_item_image(item))
+    # if erp_item_image(item) is not None update item_data["images"] list with erp_item_image(item) result
+    if erp_item_image(item) is not None:
+        # item_data["images"] = []
+        # item_data["images"].append(erp_item_image(item))
+        item_data.update(erp_item_image(item))
 
     if item.get("has_variants"):  # we are dealing a variable product
         item_data["type"] = "variable"
@@ -550,11 +549,12 @@ def sync_item_with_woocommerce(item, price_list, warehouse, woocommerce_item=Non
     erp_item = frappe.get_doc("Item", item.get("name"))
     erp_item.flags.ignore_mandatory = True
 
-    if not item.get("woocommerce_product_id"):
+    if not item.get("woocommerce_product_id") or not erp_item.woocommerce_product_id:
         item_data["status"] = "draft"
-        # image_data = sync_item_image(item) or {}
         # item_data.update(image_data)
-
+        # create a frappe log regarding this
+        frappe.log_error(title="Before Creation Woocommerce Item ID not set",
+                         message="Woocommerce Item ID not set for {0} and get woocommerce_product_id value {1} or erp_item.woocommerce_product_id {2} ".format(item.get("name"), item.get("woocommerce_product_id"), erp_item.woocommerce_product_id))
         create_new_item_to_woocommerce(
             item, item_data, erp_item, variant_item_name_list)
 
@@ -571,19 +571,24 @@ def sync_item_with_woocommerce(item, price_list, warehouse, woocommerce_item=Non
             #     for image in images:
             #         item_data["images"].append(image)
 
-            make_woocommerce_log(title="Update Item", status="Queued", method="sync_item_with_woocommerce",
+            make_woocommerce_log(title="Update Item via Put request", status="Queued", method="sync_item_with_woocommerce",
                                  message="Updating Item {0}".format(item.get("name")), request_data=item_data, exception=False)
 
             put_request(
                 "products/{0}".format(item.get("woocommerce_product_id")), item_data)
 
+            frappe.log_error(title="Item Updated Details",
+                             message="{0}".format(item_data))
+
         except requests.exceptions.HTTPError as err:
             # or e.args[0].startswith("400"))
             if err.args[0] and err.args[0].startswith("404"):
                 if frappe.db.get_value("WooCommerce Config", "WooCommerce Config", "if_not_exists_create_item_to_woocommerce"):
-                    item_data["id"] = ''
-                    create_new_item_to_woocommerce(
-                        item, item_data, erp_item, variant_item_name_list)
+                    # item_data["id"] = ''
+                    # create_new_item_to_woocommerce(
+                    #     item, item_data, erp_item, variant_item_name_list)
+                    make_woocommerce_log(title="Item Update Failed to Synced to Woocommerce", status="Failed", method="sync_item_with_woocommerce",
+                                         message="Update of Item {0} Failed check Its woocommerce id in the request log".format(item.get("name")), request_data=item_data, exception=False)
                 else:
                     disable_woocommerce_sync_for_item(erp_item)
             else:
@@ -608,6 +613,10 @@ def sync_item_with_woocommerce(item, price_list, warehouse, woocommerce_item=Non
     if erp_item.image:
         try:
             item_image = get_item_image(woocommerce_item)
+            # make_woocommerce_log(title="Item Image", status="Queued", method="sync_item_with_woocommerce", message="Updating Item Image {0}".format(
+            #     item.get("name")), request_data=item_image, exception=False)
+            frappe.log_error(title="Get Item Image ",
+                             message="Get Item Image {0}".format(item_image))
         except:
             item_image = None
         img_details = frappe.db.get_value(
@@ -619,22 +628,25 @@ def sync_item_with_woocommerce(item, price_list, warehouse, woocommerce_item=Non
             # update_item_image(erp_item, item_image)
             # post_request(
             #     "products/{0}".format(item.woocommerce_product_id), image_info)
+
+            frappe.log_error(title="Item Image sync executed as Woo image is old or not available",
+                             message="Updating Item Image {0}".format(item_image))
             sync_item_image(erp_item)
 
     frappe.db.commit()
 
 
 def create_new_item_to_woocommerce(item, item_data, erp_item, variant_item_name_list):
-    new_item = post_request("products", item_data)
-
-    erp_item.woocommerce_product_id = new_item.get("id")
-    # erp_item.Item-stock_keeping_unit = new_item.get("sku")
-
-    # if not item.get("has_variants"):
-    # erp_item.woocommerce_variant_id = new_item['product']["variants"][0].get("id")
-
-    erp_item.save()
-    # update_variant_item(new_item, variant_item_name_list)
+    try:
+        new_item = post_request("products", item_data)
+        erp_item.woocommerce_product_id = new_item.get("id")
+        # erp_item.Item-stock_keeping_unit = new_item.get("sku")
+        erp_item.save()
+        make_woocommerce_log(title="New Item Synced", status="Success", method="create_new_item_to_woocommerce",
+                             message="New Item {0} synced successfully".format(item.get("name")), request_data=item_data, exception=False)
+    except Exception as e:
+        make_woocommerce_log(title="Error New Item Sync Item Post request {0}".format(e), status="Error", method="create_new_item_to_woocommerce", message=frappe.get_traceback(),
+                             request_data=item_data, exception=True)
 
 
 def format_erpnext_img_url(image_details):
@@ -646,7 +658,7 @@ def format_erpnext_img_url(image_details):
 
 def sync_item_image(item):
     # debug make a frapper log of item object when it is passed to this function
-    frappe.log_error(title="Item WooCommerce ID",
+    frappe.log_error(title="Item WooCommerce ID in Sync Image",
                      message="{0}".format(item.get("woocommerce_product_id")))
 
     image_info = {
@@ -660,10 +672,12 @@ def sync_item_image(item):
                 woocommerce_image_id = get_woocommerce_item_image(
                     item.get("woocommerce_product_id"))
                 # If the image exists in WooCommerce, retrieve the ID of the image and include it in the `image_info["images"]` list
+                frappe.log_error(title="Get Image by WooCommerce ID in Sync Image",
+                                 message="Retrived Woo Image Data {0}".format(woocommerce_image_id))
                 if woocommerce_image_id:
                     image_info["images"][0]["id"] = woocommerce_image_id[0]["id"]
-                else:
-                    image_info["images"][0]["id"] = None
+                # else:
+                #     image_info["images"][0]["id"] = ""
             # catch request exceptions
             except:
                 # Handle the case where no WooCommerce image ID is found
@@ -687,13 +701,15 @@ def sync_item_image(item):
                                  message="Image details not found in ERPNext for image {0}".format(item.image), request_data=item, exception=False)
         if item.woocommerce_product_id is not None:
             try:
+                frappe.log_error(title="Sync Item Image Payload",
+                                 message="{0}".format(image_info))
                 post_request(
                     "products/{0}".format(item.woocommerce_product_id), image_info)
                 # log the value of image_info
                 make_woocommerce_log(title="Image Synced", status="Success", method="sync_item_image", message="Image {0} synced successfully for Item {1}".format(
                     image_info, item.name), request_data=image_info, exception=False)
             except Exception as e:
-                make_woocommerce_log(title="{0}".format(e), status="Error", method="sync_item_image", message=frappe.get_traceback(),
+                make_woocommerce_log(title="Sync Item image Post request error {0}".format(e), status="Error", method="sync_item_image", message=frappe.get_traceback(),
                                      request_data=item, exception=True)
 
 
@@ -703,8 +719,7 @@ def erp_item_image(item):
         "images": [{}]
     }
 
-    if item.image:
-        # Retrieve the details of the image for the ERPNext item from the database
+    if item.image is not None:
         image_details = frappe.db.get_value("File", {"file_url": item.image}, [
             "file_name", "file_url", "is_private", "content_hash"])
 
