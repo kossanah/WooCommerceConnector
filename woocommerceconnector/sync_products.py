@@ -237,6 +237,9 @@ def get_categories(woocommerce_item, is_variant=False):
         try:
             for category in woocommerce_item.get("categories"):
                 categories.append({'category': category.get("name")})
+                # frappe.log_error(title="Category", message="{0}".format(category.get("name")))
+                frappe.log_error(title="Category", message="{0}".format(
+                    woocommerce_item.get("categories")))
         except:
             pass
     else:
@@ -247,6 +250,8 @@ def get_categories(woocommerce_item, is_variant=False):
                 categories.append({'category': category[0]})
         except:
             pass
+    make_woocommerce_log(title="Category", status="Success", method="get_categories",
+                         message="Successfully fetched categories", request_data=categories, exception=False)
     return categories
 
 # fix this
@@ -643,7 +648,7 @@ def create_new_item_to_woocommerce(item, item_data, erp_item, variant_item_name_
         # erp_item.Item-stock_keeping_unit = new_item.get("sku")
         erp_item.save()
         make_woocommerce_log(title="New Item Synced", status="Success", method="create_new_item_to_woocommerce",
-                             message="New Item {0} synced successfully".format(item.get("name")), request_data=item_data, exception=False)
+                             message="New Item {0} synced successfully with WooCommerce product ID of {1}".format(item.get("name"), erp_item.woocommerce_product_id), request_data=item_data, exception=False)
     except Exception as e:
         make_woocommerce_log(title="Error New Item Sync Item Post request {0}".format(e), status="Error", method="create_new_item_to_woocommerce", message=frappe.get_traceback(),
                              request_data=item_data, exception=True)
